@@ -12,14 +12,19 @@ from sklearn.svm import SVC
 from sklearn.gaussian_process import GaussianProcessClassifier
 from sklearn.gaussian_process.kernels import RBF
 from sklearn.naive_bayes import GaussianNB
+from sklearn import preprocessing
 
 import pprint
 import numpy
 
 RAW_DATA = []
-DATA_FILENAME = "id-ud-dev.conllu"
+DATA_FILENAME = "id-ud-train.conllu"
 
 def load_raw_data(filename):
+    # load data from file and put it in RAW_DATA
+    # RAW_DATA is a list of line of token.
+    # this function also removes comment starting with # and empty line from file
+
     global RAW_DATA
 
     with open(filename, "r") as fin:
@@ -31,6 +36,8 @@ def load_raw_data(filename):
                     RAW_DATA.append(row_data)
 
 def get_features(data, idx):
+    # convert data to a dictionary of features. data contains raw data from file
+    # and idx is the line of data being processed
     return ({
         'word': data[idx][1].lower(),
         'word-1': '_' if int(data[idx][0]) <= 1 else data[idx - 1][1].lower(),
@@ -40,40 +47,73 @@ def get_features(data, idx):
         'is_first': data[idx][0] == 1,
         'is_last': (idx == len(data) - 1) or (int(data[idx + 1][0]) == 1),
         'is_numeric': data[idx][1].isdigit(),
+        'prefix_2': data[idx][1][:2],
+        'prefix_3': data[idx][1][:3],
+        'suffix_2': data[idx][1][len(data[idx][1]) - 2:2],
+        'suffix_3': data[idx][1][len(data[idx][1]) - 2:3]
     }, data[idx][3])
 
-def create_data_frames(data):
+def reformat_data(data):
+    # convert data from RAW_DATA to a formatted version.
+    # the formatted data is a dictionary with a DataFrame features and a list of token class
+
     rows = []
-    for i in range(0, len(data)):
+    feature_rows = []
+    class_rows = []
+    for i in range(len(data)):
+    # for i in range(25):
         (features, pos_class) = get_features(data, i)
-        rows.append({'features': features, 'class': pos_class})
-    print 'total data', len(rows)
-    return DataFrame(rows)
+        feature_rows.append(features)
+        class_rows.append(pos_class)
+
+    features_dframe = DataFrame(feature_rows)
+
+    return {'features': features_dframe, 'class': class_rows}
+
+def encode_data(data):
+    # convert data from string format to integer using LabelEncoder
+
+    labelencoder = preprocessing.LabelEncoder()
+    classencoder = preprocessing.LabelEncoder()
+
+    first_match = [s for s in data['features'].columns if "pos" in s][0]
+    classencoder.fit(data['features'][first_match])
+    data['class'] = numpy.array(classencoder.transform(data['class']))
+
+    for column in data['features'].columns:
+        if 'pos' in column:
+            data['features'][column] = classencoder.transform(data['features'][column].values)
+        else:
+            labelencoder.fit(data['features'][column].values)
+            data['features'][column] = labelencoder.transform(data['features'][column].values)
+
+    return data
 
 if __name__ == '__main__':
     load_raw_data(DATA_FILENAME)
-    data_frame = create_data_frames(RAW_DATA)[:2500]
+    data = reformat_data(RAW_DATA)
+    data = encode_data(data)
 
-    d = DictVectorizer(sparse=False)
+    print data
 
     pipeline = Pipeline([
-        ('vectorizer', DictVectorizer(sparse=False)),
-        # ('classifier', DecisionTreeClassifier(criterion='entropy')) # ~ 6.5
-        # ('classifier', RandomForestClassifier()) # ~ 6.7
-        ('classifier', GaussianNB()) # ~ 5
+        ('classifier', DecisionTreeClassifier(criterion='entropy')) # ~ 8.2
+        # ('classifier', RandomForestClassifier(n_estimators=250)) # ~ 7,5
+        # ('classifier', GaussianProcessClassifier()) # ~
+        # ('classifier', MLPClassifier()) # ~ 7.0 -> lama banget -.-
+        # ('classifier', GaussianNB()) # ~ 4.2
     ])
+
 
     k_fold = KFold(n_splits=10)
     scores = []
-    for train_indices, test_indices in k_fold.split(data_frame):
-        # print "train", train_indices
-        # print "test", test_indices
-        train_features = data_frame.iloc[train_indices]['features'].values
-        train_class = data_frame.iloc[train_indices]['class'].values
-        # print train_features
-        # print train_class
-        test_features = data_frame.iloc[test_indices]['features'].values
-        test_class = data_frame.iloc[test_indices]['class'].values
+    for train_indices, test_indices in k_fold.split(data['class']):
+        train_class = numpy.take(data['class'], train_indices)
+        test_class = numpy.take(data['class'], test_indices)
+
+        train_features = data['features'].iloc[train_indices].values
+        test_features = data['features'].iloc[test_indices].values
+
         pipeline.fit(train_features, train_class)
         score = pipeline.score(test_features, test_class)
         print score
